@@ -1,4 +1,4 @@
-# mac-mdm-bypass
+# mdm-bypass-macos
 
 A hardened, self-contained Bash script that removes Automated Device Enrollment (DEP/MDM) enrollment hooks from a Mac by creating a local administrator account and blocking Apple's enrollment callbacks — run entirely from **macOS Recovery**.
 
@@ -17,124 +17,159 @@ It is **not** a tool for circumventing ownership of devices you don't control, a
 ## What it does
 
 1. **Detects and mounts** the macOS System and Data volumes (APFS role-based detection with mounted-volume fallback).
-2. **Creates a local administrator account** directly in the Data volume's Directory Services node (`dslocal`), with a free UID (501–599), home directory, and admin group membership.
-3. **Blocks Apple's MDM enrollment domains** in `/etc/hosts` (with automatic backup of the original file).
+2. **Creates a local administrator account** directly in the Data volume's Directory Services node (`dslocal`), selecting an available UID (501–599), generating a home directory, and granting admin group membership.
+3. **Blocks Apple's MDM enrollment domains** in `/etc/hosts` by routing them to `0.0.0.0` (with automatic backup of the original file).
 4. **Clears cloud enrollment records** and marks Setup Assistant as complete (`.AppleSetupDone`, cloudConfig markers).
 
-After a reboot, the Mac boots to a normal login screen with your local admin — no MDM enrollment screen.
+After rebooting, the Mac boots directly to the login screen with your local admin account — bypassing the MDM / Remote Management enrollment prompt.
 
 ---
 
 ## Requirements
 
-- macOS Recovery mode (Intel: `Cmd+R` at boot · Apple Silicon: hold power button until *Loading startup options*, then select *Options*)
-- The Mac must have macOS installed
-- The script runs as root (Recovery gives you root automatically)
+- **macOS Recovery mode**:
+  - **Apple Silicon (M1/M2/M3/M4)**: Turn off the Mac, then press and hold the Power button until you see *Loading startup options*. Select *Options* → *Continue*.
+  - **Intel**: Restart and immediately hold `Cmd + R` until the Apple logo appears.
+- macOS must already be installed on the drive.
+- Open **Terminal** from the top menu bar (**Utilities** → **Terminal**).
+- Terminal in Recovery automatically runs as `root`.
 
-Tested against macOS Monterey through Sequoia. Report successes/failures per version in Issues.
+> [!NOTE]
+> Tested on macOS Monterey through Sequoia.
+
+---
+
+## Quick Start (One-Liner)
+
+From the Recovery Terminal, run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HBL-LL/mdm-bypass-macos/main/mdm-bypass.sh -o mdm-bypass.sh && chmod +x mdm-bypass.sh && ./mdm-bypass.sh -y && reboot
+```
+
+This will download the script, create a local admin with default credentials (`Apple` / `1234`), block enrollment endpoints, and reboot into macOS.
 
 ---
 
 ## Usage
 
-Download or clone, then from the Recovery terminal:
+Download or clone the script, then execute from the Recovery terminal:
 
 ```bash
-# Defaults (user: Apple / password: 1234), with one y/N confirmation
+# Default interactive mode (user: Apple / password: 1234, with confirmation prompt)
 ./mdm-bypass.sh
 
-# Fully unattended — no prompts at all
+# Fully unattended — skips confirmation prompt
 ./mdm-bypass.sh -y
 
-# Custom credentials
+# Custom administrator credentials
 ./mdm-bypass.sh -y -u techadmin -f "Tech Admin" -p 'Str0ngPass!'
 
-# Block extra domains (comma-separated)
-./mdm-bypass.sh -y -d "domain"
+# Block custom or enterprise MDM domains (comma-separated)
+./mdm-bypass.sh -y -d "mdm.company.com,jamfcloud.com"
 ```
 
-Typical one-liner:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/Hamza-Boulila/mac-mdm-bypass/main/mdm-bypass.sh -o mdm-bypass.sh && chmod +x mdm-bypass.sh && ./mdm-bypass.sh -y && reboot
-```
-
-### Flags
+### Command-Line Flags
 
 | Flag | Description | Default |
-|------|-------------|---------|
-| `-u` | Username | `Apple` |
-| `-f` | Full name | `Apple` |
-| `-p` | Password (min 4 chars) | `1234` |
-| `-d` | Extra domains to block, comma-separated | *(built-in list only)* |
-| `-y` | Skip confirmation prompt (unattended) | off |
-| `-h` | Show help | — |
+|:----:|-------------|---------|
+| `-u` | Local admin username | `Apple` |
+| `-f` | Full name / display name | `Apple` |
+| `-p` | Password (minimum 4 characters) | `1234` |
+| `-d` | Extra domains to block (comma-separated) | *(none)* |
+| `-y` | Non-interactive mode (skip `y/N` confirmation) | `false` |
+| `-h` | Display help and usage information | — |
 
 ---
 
-## Built-in blocked domains
+## Built-in Blocked Domains
 
-Add more with `-d "domain1,domain2"`.
+The script automatically appends null routes (`0.0.0.0`) in `/etc/hosts` for the following Apple enrollment endpoints:
+
+| Domain | Purpose |
+|--------|---------|
+| `deviceenrollment.apple.com` | Apple Device Enrollment Program (DEP) endpoint |
+| `mdmenrollment.apple.com` | Mobile Device Management enrollment server |
+| `iprofiles.apple.com` | Configuration profile delivery service |
+| `vpp.itunes.apple.com` | Volume Purchase Program (VPP) service |
+| `mdm.apple.com` | General Apple MDM communication |
+
+You can specify additional vendor-specific endpoints using the `-d` flag:
+```bash
+./mdm-bypass.sh -y -d "mdm.yourcompany.com,enroll.jamf.com"
+```
 
 ---
 
-## Safety & design notes
+## Safety & Design Notes
 
-- **Idempotent** — safe to re-run; duplicate hosts entries are prevented, existing users auto-resolved (`Apple` → `Apple1`…).
-- **Hosts backup** — the original `/etc/hosts` is saved to `/etc/hosts.bak-mdm` before any modification. Restore with:
+- **Idempotent** — safe to re-run; duplicate `/etc/hosts` entries are ignored, and existing usernames auto-increment (`Apple` → `Apple1`…).
+- **Hosts Backup** — creates `/etc/hosts.bak-mdm` before modifying `/etc/hosts`. Restore anytime:
   ```bash
   sudo cp /etc/hosts.bak-mdm /etc/hosts
   ```
-- **Fail-fast** — critical steps (user record, password, admin group) abort with clear errors; cosmetic failures warn and continue.
-- **Free-UID search** — picks the first available UID in 501–599 instead of blindly using 501.
-- **Home directory ownership** — the new user's home is `chown`-ed to the new UID (avoids FileVault/desktop issues).
-- **Exit codes** — `0` on success, `1` on any critical failure, so you can chain commands: `./mdm-bypass.sh -y && reboot`.
+- **Dynamic UID Allocation** — scans for the first free UID in the range `501–599` instead of assuming 501 is vacant.
+- **Fail-Fast Execution** — critical operations (Directory Services node access, record creation, password setting) abort immediately on failure with descriptive errors.
+- **Clean Permissions** — creates and properly chowns (`$UID:20`) the user home folder in `/Volumes/<Data>/Users/<username>`.
+- **Exit Status** — returns code `0` on success and `1` on failure, enabling safe shell chaining (`./mdm-bypass.sh -y && reboot`).
 
 ---
 
-## Undoing the bypass
+## Undoing the Bypass
 
-1. Restore the hosts file: `sudo cp /etc/hosts.bak-mdm /etc/hosts`
-2. Delete the local user: `sudo dscl . -delete /Users/username`
-3. Remove markers:
+To restore the device to its previous state or re-enroll in MDM:
+
+1. **Restore hosts file**:
    ```bash
-   sudo rm /var/db/ConfigurationProfiles/Settings/.cloudConfigProfileInstalled
-   sudo rm /var/db/ConfigurationProfiles/Settings/.cloudConfigRecordNotFound
-   sudo rm /private/var/db/.AppleSetupDone
+   sudo cp /etc/hosts.bak-mdm /etc/hosts
    ```
-4. Re-enroll via your MDM solution (or `sudo profiles renew -type enrollment`).
+2. **Remove the created local user**:
+   ```bash
+   sudo dscl . -delete /Users/username
+   sudo rm -rf /Users/username
+   ```
+3. **Remove setup and configuration profile markers**:
+   ```bash
+   sudo rm -f /var/db/ConfigurationProfiles/Settings/.cloudConfigProfileInstalled
+   sudo rm -f /var/db/ConfigurationProfiles/Settings/.cloudConfigRecordNotFound
+   sudo rm -f /private/var/db/.AppleSetupDone
+   ```
+4. **Trigger MDM re-enrollment**:
+   ```bash
+   sudo profiles renew -type enrollment
+   ```
 
 ---
 
 ## Troubleshooting
 
-| Problem | Fix |
-|---|---|
-| "Must run as root" | You're not in Recovery — reboot into Recovery mode. |
-| "Data volume not found" | The Data volume may be FileVault-encrypted and locked. Unlock it in Recovery first (Disk Utility → Mount), or the Startup Disk password prompt. |
-| "Directory Services node missing" | macOS isn't installed on the disk, or you mounted the wrong volume. |
-| Login loop after reboot | Log in once at the console (or wait for Setup Assistant), then delete/recreate the user from an admin session. |
-| Still gets MDM prompt after reboot | Your org may use a network-layer DEP check — ensure the blocked domains resolve to `0.0.0.0`: `dscacheutil -q host -a name deviceenrollment.apple.com` |
+| Issue | Cause & Solution |
+|-------|------------------|
+| **"Must run as root"** | You are running the script outside of Recovery mode. Boot into macOS Recovery and launch Terminal from the Utilities menu. |
+| **"Data volume not found"** | The Data volume may be encrypted with FileVault and locked. Open **Disk Utility** in Recovery, select your Data volume (e.g. `Macintosh HD - Data`), click **Mount**, and enter your disk encryption password. |
+| **"Directory Services node missing"** | macOS is not installed on the selected target disk, or the disk layout is unmounted or corrupted. |
+| **Login loop after reboot** | Log in once via the console or Setup Assistant, then log into the created admin account. |
+| **MDM prompt reappears** | Verify the hosts file contains the blocked domains: `cat /etc/hosts`. If using third-party MDMs, identify their enrollment servers and pass them via `-d`. |
 
 ---
 
 ## FAQ
 
-**Does this bypass Activation Lock / iCloud lock?**
-No. This is not an Activation Lock tool and doesn't touch Find My.
+**Does this bypass Activation Lock / iCloud lock?**  
+No. This tool only handles MDM / DEP enrollment profiles. It cannot bypass hardware-tied iCloud Activation Lock or Find My.
 
-**Does it survive macOS updates?**
-The local user does. The hosts entries and markers may need re-application after major upgrades — simply re-run the script.
+**Does this survive macOS updates?**  
+The local administrator account persists across updates. Major macOS system upgrades may recreate system `/etc/hosts` and setup markers; if an MDM prompt reappears, simply re-run the script from Recovery mode.
 
-**Why Recovery mode?**
-The Data volume's user database (`dslocal`) is only writable from Recovery without additional SIP-related steps, and Setup Assistant runs immediately after Recovery-based changes.
+**Why must this be run in Recovery mode?**  
+The local Directory Services database (`dslocal`) on the Data volume cannot be modified directly while macOS is running due to System Integrity Protection (SIP) and active daemon locks. Recovery mode provides the necessary unconstrained access to write user records directly.
 
 ---
 
 ## Contributing
 
-PRs welcome — especially macOS version compatibility reports and additional blocked domains used by common MDM vendors.
+Pull requests and issues are welcome — especially macOS version compatibility reports and additional MDM vendor endpoints.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[MIT](LICENSE) © [Hamza Boulila](https://github.com/Hamza-Boulila)
