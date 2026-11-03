@@ -69,6 +69,14 @@ Download or clone the script, then execute from the Recovery terminal:
 ./mdm-bypass.sh -y -d "mdm.company.com,jamfcloud.com"
 ```
 
+### Interactive Menu Mode
+
+If you prefer an interactive step-by-step menu prompt instead of command-line flags:
+
+```bash
+./mdm-bypass-interactive.sh
+```
+
 ### Command-Line Flags
 
 | Flag | Description | Default |
